@@ -1,0 +1,93 @@
+module Paint.Painting where
+
+import Daml.Script
+import Paint.Bill
+
+data PaintingStatus = P_INIT | P_START | P_PROGRESS | P_FINISHED | P_PAYED deriving (Eq, Show, Ord)
+
+template PaintingProposal
+  with
+    owner : Party
+  where
+    signatory owner
+
+    choice InitPaintingTask
+      : (ContractId Painting, ContractId BillProposal)
+      with
+        bank : Party
+        worker : Party
+        salary : Decimal
+      controller owner
+      do
+        bpCid <- create BillProposal with
+            bill = Bill
+              with
+                customer = owner
+                worker = worker
+                bank
+                cash = salary
+                transfer = False
+        pCid <- create Painting with
+          housekeeper = owner
+          salary
+          worker
+          status = P_INIT
+        pure (pCid, bpCid)
+
+template Painting
+  with
+    housekeeper : Party
+    salary : Decimal
+    worker : Party
+    status : PaintingStatus
+  where
+    signatory housekeeper, worker
+
+    key (housekeeper, worker) : (Party, Party)
+    maintainer key._1
+
+    choice Start : ContractId Painting
+      controller worker
+      do
+        create this with status = P_START
+
+    choice Progress : ContractId Painting
+      controller worker
+      do 
+        create this with status = P_PROGRESS
+    
+    choice Finished : ContractId Painting
+      controller worker
+      do 
+        create this with status = P_FINISHED
+    
+    choice PayMoney : ()
+      controller housekeeper
+      do 
+        -- update painting status
+        create this with status = P_PAYED
+        -- pay money
+        pure()
+
+test_painting : Script ()
+test_painting = script do
+  bank <- allocateParty "UN Bank"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  initCid <- submit alice do
+    createCmd Painting with
+      housekeeper = alice
+      salary = 650.0
+      worker = bob
+      status = P_INIT
+  (paintingProposalCid, billProposalCid) <- submit alice do
+    createAndExerciseCmd PaintingProposal InitPaintingTask
+      with
+        bank
+        worker = bob
+        salary = 450.0
+  -- startCid <- submit bob do exerciseCmd initCid Start
+  -- progressCid <- submit bob do exerciseCmd startCid Progress
+  -- finishedCid <- submit bob do exerciseCmd progressCid Finished
+  -- submit alice do exerciseCmd finishedCid PayMoney
+  pure()

@@ -12,7 +12,6 @@ template Bill
     transfer : Bool
   where
     signatory customer, worker, bank
-    observer customer, worker, bank
     ensure cash > 0.0
 
     choice TransferMoney
