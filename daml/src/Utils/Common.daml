@@ -1,0 +1,36 @@
+module Utils.Common where
+
+import Daml.Script
+import DA.Optional ( fromOptional )
+
+data PartyInfo = PartyInfo
+  with
+    name : Text
+    id : Party
+      deriving (Eq, Show, Ord)
+
+allocateParties : [Text] -> Script [PartyInfo]
+allocateParties partyNames = do
+  existingParties <- listKnownParties
+  -- define a method to allocate a party with a specific name
+  let
+    allocateParty party =
+      case find ( \p -> ( fromOptional "" p.displayName ) == party ) existingParties of
+        -- if the party existed, just return it
+        Some detail -> do
+          pure detail.party
+        None -> do
+          allocatePartyWithHint ( party ) do
+            PartyIdHint ( party )
+  -- exercise the allocateParty function
+  parties <- mapA allocateParty partyNames
+  -- return a set of partyInfo that has been compressed by zip and fromated as name and id
+  pure do
+    map ( \(name, id) -> PartyInfo with name; id) do
+      zip partyNames parties
+
+test_allocateParties : Script ()
+test_allocateParties = script do
+  parties <- allocateParties ["Alice", "Bob", "Cindy", "Dogs"]
+  pure()
+

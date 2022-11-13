@@ -1,0 +1,134 @@
+module Paint.Bill where
+
+import Paint.Account
+import Daml.Script
+
+template Bill
+  with
+    customer : Party
+    worker : Party
+    bank : Party
+    cash : Decimal
+    transfer : Bool
+  where
+    signatory customer, worker, bank
+    observer customer, worker, bank
+    ensure cash > 0.0
+
+    choice TransferMoney
+      : ContractId Bill
+      controller bank, customer, worker
+      do
+        -- mark the bill transfered
+        create this with transfer = True
+
+template BillProposal
+  with
+    bill : Bill
+  where
+    signatory bill.customer
+    observer bill.worker, bill.bank
+
+    ensure bill.cash > 0.0
+
+    nonconsuming choice BankPreApprove : ContractId Account
+      controller bill.bank
+      do
+        (accountCid, account) <- fetchByKey @Account bill.bank
+        exercise accountCid TransferProposal
+          with
+            receiver = [bill.worker]
+            payer = [bill.customer]
+
+    choice CustomerApprove : ContractId BillProposal
+      with
+        accountCid : ContractId Account
+      controller bill.customer
+      do
+        (aCid, a) <- fetchByKey @Account bill.customer
+        assertMsg
+          "customer does not has enough money pay the bill"
+          (a.balance >= bill.cash)
+        exercise aCid TransferProposal
+          with
+            receiver = [bill.bank]
+            payer = []
+        create this
+
+    choice WorkerApprove : ContractId WorkerApproved
+      with
+        accountCid : ContractId Account
+      controller bill.worker
+      do
+        (waCid, _) <- fetchByKey @Account bill.worker
+        exercise waCid TransferProposal
+          with
+            receiver = []
+            payer = [bill.bank]
+        create WorkerApproved with bill
+
+template WorkerApproved
+  with
+    bill : Bill
+  where
+    signatory bill.customer, bill.worker
+    observer bill.bank
+
+    choice BankApprove : ContractId BankApproved
+      controller bill.bank
+      do
+        -- transfer customer's money to bank's account
+        (bankAccountCid, _) <- fetchByKey @Account bill.bank
+        exercise bankAccountCid TransferIncome with money = bill.cash
+        create BankApproved with bill
+
+template BankApproved
+  with
+    bill : Bill
+  where
+    signatory bill.customer, bill.worker, bill.bank
+
+    choice PayWorker : ContractId Bill
+      controller bill.bank
+      do
+        (bankAccountCid, _) <- fetchByKey @Account bill.bank
+        exercise bankAccountCid TransferPay with money = bill.cash
+        billCid <- create Bill
+          with
+            customer = bill.customer
+            worker = bill.worker
+            bank = bill.bank
+            cash = bill.cash
+            transfer = False
+        exercise billCid TransferMoney
+
+test_bill : Script ()
+test_bill = script do
+  accounts <- allocateAccounts ["UN Bank", "Alice", "Bob"] 1000.0
+  let all@[
+          (bank, bankAccountCid),
+          (alice, aliceAccountCid),
+          (bob, bobAccountCid)
+        ] = map (identity) accounts
+  -- alice create a bill proposal
+  aliceCid <- submit alice do
+    createCmd BillProposal
+      with
+        bill = Bill
+          with
+            customer = alice
+            worker = bob
+            bank
+            cash = 750.0
+            transfer = False
+  -- bank pre-approve the bill
+  baCid <- submit bank do exerciseCmd aliceCid BankPreApprove
+  -- alice approve the bill
+  aliceCid <- submit alice do exerciseCmd aliceCid CustomerApprove with accountCid = baCid
+  -- bob approve the bill
+  bobCid <- submit bob do exerciseCmd aliceCid WorkerApprove with accountCid = baCid
+  -- bank approve the bill
+  bankCid <- submit bank do exerciseCmd bobCid BankApprove
+  -- The job is done and bank transfer the money to worker
+  billCid <- submit bank do exerciseCmd bankCid PayWorker
+  pure()

@@ -1,0 +1,23 @@
+module Setup where
+
+import Daml.Script
+import DA.Foldable (mapA_)
+import Paint.Account
+
+init : Script ()
+init = script do
+  let users = ["bank", "alice", "bob", "cindy", "david", "eson"]
+  -- create party
+  parties <- mapA (\name -> allocatePartyWithHint name (PartyIdHint name)) users
+  userIds <- mapA (\party -> validateUserId party) users
+  mapA_ (\(party, userId) -> createUser (User userId (Some party)) [CanActAs party]) (zip parties userIds)
+  -- create account
+  mapA_ (\party -> submit party do 
+                    createCmd Account 
+                      with 
+                        owner = party
+                        balance = 10000.0
+                        receivers = []
+                        payers = []
+    ) parties
+  pure()

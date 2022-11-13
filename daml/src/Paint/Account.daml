@@ -1,0 +1,134 @@
+module Paint.Account where
+
+import Daml.Script
+import DA.Optional (isSome, fromSome)
+import Utils.Common
+import DA.Foldable (mapA_)
+
+template Account
+  with
+    owner : Party
+    balance : Decimal
+    payers : [Party]
+    receivers : [Party]
+  where
+    signatory owner
+    observer payers, receivers
+
+    key owner : Party
+    maintainer key
+
+    ensure balance >= 0.0
+
+    choice TransferProposal : ContractId Account
+      with
+        payer : [Party]
+        receiver : [Party]
+      controller owner
+      do
+        create this with
+          payers = payer ++ payers
+          receivers = receiver ++ receivers
+
+    choice TransferPay : ContractId Account
+      with
+        money : Decimal
+      controller owner
+      do
+        assertMsg "transfer money must not less than 0" (money >= 0.0)
+        assertMsg "at lest one receiver is required" (not (null receivers))
+        let
+          pays incomer = do
+            (incomerCid, _) <- fetchByKey @Account incomer
+            exercise incomerCid Income with money
+        mapA_ pays receivers
+        create this
+          with
+            balance = balance - money
+            receivers = []
+
+    nonconsuming choice TransferIncome : ContractId Account
+      with
+        money : Decimal
+      controller owner
+      do
+        assertMsg "transfer money must not less than 0" (money >= 0.0)
+        assertMsg "at lest one payer is required" (not (null receivers))
+        let
+          pays incomer = do
+            (incomerCid, _) <- fetchByKey @Account incomer
+            exercise incomerCid Pay with money
+        -- the payers pay their money to owner
+        mapA_ pays payers
+        archive self
+        create this
+          with
+            balance = balance + money
+            payers = []
+
+    choice Pay : ContractId Account
+      with
+        money : Decimal
+      controller receivers
+      do
+        assertMsg "Income money must not less than 0" (money >= 0.0)
+        assertMsg "Account does not have enough money pay the bill" (balance >= money)
+        create this
+          with
+            balance = balance - money
+            receivers = []
+
+    choice Income : ContractId Account
+      with
+        money : Decimal
+      controller payers
+      do
+        assertMsg "Income money must great than 0" (money > 0.0)
+        create this
+          with
+            balance = balance + money
+            payers = []
+
+template Transfer
+  with
+    from : Party
+    to : Party
+    money : Decimal
+  where
+    signatory from, to
+
+allocateAccounts : [Text] -> Decimal -> Script [(Party, ContractId Account)]
+allocateAccounts partyNames balance = do
+  parties <- allocateParties partyNames
+  let
+    allocateAccount party = do
+      sa <- queryContractKey @Account party party
+      if (isSome sa)
+        then
+          pure (party, (fromSome sa)._1)
+        else do
+          accountCid <- submit party do
+            createCmd Account
+              with
+                owner = party
+                balance
+                payers = []
+                receivers = []
+          pure (party, accountCid)
+  accounts <- mapA ( \info -> allocateAccount info.id) parties
+  pure accounts
+
+test_account : Script ()
+test_account = script do
+  accounts <- allocateAccounts ["UN Bank", "Alice", "Bob"] 10000.0
+  let all@[(bank, bankAccountCid), (alice, aliceAccountCid), (bob, bobAccountCid)] = map (identity) accounts
+  -- the bank acts as a middleman
+  bankCid <- submit bank do exerciseCmd bankAccountCid TransferProposal with payer = [alice], receiver = [bob]
+  aliceCid <- submit alice do exerciseCmd aliceAccountCid TransferProposal with payer = [], receiver = [bank]
+  bobCid <- submit bob do exerciseCmd bobAccountCid TransferProposal with payer = [bank], receiver = []
+  -- transfer 5555.0 from alice
+  bankCid1 <- submit bank do exerciseCmd bankCid TransferIncome with money = 5555.0
+  -- transfer 5555.0 to bob
+  bankCid2 <- submit bank do exerciseCmd bankCid1 TransferPay with money = 5555.0
+  submitMustFail bank do exerciseCmd bankCid2 TransferPay with money = 5555.0
+  pure()
