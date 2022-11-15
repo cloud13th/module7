@@ -6,7 +6,7 @@ import Paint.Account
 
 init : Script ()
 init = script do
-  let users = ["bank", "alice", "bob", "cindy", "david", "eson"]
+  let users = ["bank", "alice", "cindy", "david", "eson"]
   -- create party
   parties <- mapA (\name -> allocatePartyWithHint name (PartyIdHint name)) users
   userIds <- mapA (\party -> validateUserId party) users

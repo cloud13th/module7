@@ -1,0 +1,60 @@
+module Paint.PaintData where
+
+data Bill = Bill
+  with
+    customer : Party
+    worker : Party
+    bank : Party
+    cash : Decimal
+    transfer : Bool
+      deriving (Eq, Show)
+
+initBill : Party -> Party -> Party -> Decimal -> Bill
+initBill customer worker bank cash =
+  Bill with customer, worker, bank, cash, transfer = True
+
+billTransfered : Bill -> Bill
+billTransfered bill =
+  Bill with
+    customer = bill.customer
+    worker = bill.worker
+    bank = bill.bank
+    cash = bill.cash
+    transfer = True
+
+data PaintStatus = 
+  P_INIT
+  | P_START
+  | P_PROGRESS
+  | P_FINISHED
+  | P_PAYED
+    deriving (Eq, Show, Ord)
+
+data Paint = Paint
+  with
+    housekeeper : Party
+    intermediary : Party
+    worker : Party
+    salary : Decimal
+    status : PaintStatus
+      deriving (Eq, Show)
+
+initPaint : Party -> Party -> Party -> Decimal -> Paint
+initPaint housekeeper intermediary worker salary =
+  Paint with 
+    housekeeper
+    intermediary
+    worker
+    salary
+    status = P_INIT
+
+
+
+
+
+
+
+
+
+
+

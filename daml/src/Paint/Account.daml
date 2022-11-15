@@ -126,9 +126,9 @@ test_account = script do
   bankCid <- submit bank do exerciseCmd bankAccountCid TransferProposal with payer = [alice], receiver = [bob]
   aliceCid <- submit alice do exerciseCmd aliceAccountCid TransferProposal with payer = [], receiver = [bank]
   bobCid <- submit bob do exerciseCmd bobAccountCid TransferProposal with payer = [bank], receiver = []
-  -- transfer 5555.0 from alice
+  -- -- transfer 5555.0 from alice
   bankCid1 <- submit bank do exerciseCmd bankCid TransferIncome with money = 5555.0
-  -- transfer 5555.0 to bob
+  -- -- transfer 5555.0 to bob
   bankCid2 <- submit bank do exerciseCmd bankCid1 TransferPay with money = 5555.0
   submitMustFail bank do exerciseCmd bankCid2 TransferPay with money = 5555.0
   pure()

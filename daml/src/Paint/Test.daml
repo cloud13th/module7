@@ -20,20 +20,16 @@ test_painting = script do
         payers = []
       ) parties
   -- alice create a painting task and allocate it to bob
-  initPaintCid <- submit alice do
-    createCmd Painting with
-      housekeeper = alice
-      worker = bob
-      salary = 500.0
-      status = P_INIT
+  (paintingCid, billProposalCid) <- submit alice do
+    createAndExerciseCmd
+      PaintingProposal with owner = alice
+      InitPaintingTask with intermediary = bank, worker = bob, salary = 450.0
   -- bob accept the job
-  startPaintCid <- submit bob do
-    exerciseCmd initPaintCid Start
+  
+  
   -- bank create a bill depends on the job
   
   -- bob begain to do the job
-  progressPaintCid <- submit bob do
-    exerciseCmd startPaintCid Progress
 
   -- bank pre-transfer the money from alice to bank
 

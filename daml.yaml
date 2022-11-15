@@ -10,9 +10,3 @@ dependencies:
   - daml-prim
   - daml-stdlib
   - daml-script
-# parties:
-#   - alice
-#   - bob
-#   - cindy
-#   - savid
-#   - eson

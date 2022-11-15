@@ -2,31 +2,33 @@ module Paint.Bill where
 
 import Paint.Account
 import Daml.Script
+import Paint.PaintData
 
-template Bill
+template FinalBill
   with
-    customer : Party
-    worker : Party
-    bank : Party
-    cash : Decimal
-    transfer : Bool
+    bill : Bill
   where
-    signatory customer, worker, bank
-    ensure cash > 0.0
+    signatory bill.customer, bill.bank
+    observer bill.worker
+    ensure bill.cash > 0.0
 
-    choice TransferMoney
-      : ContractId Bill
-      controller bank, customer, worker
+    choice TransferMoney : ContractId FinalBill
+      controller bill.bank, bill.customer
       do
-        -- mark the bill transfered
-        create this with transfer = True
+        create this with bill = (billTransfered bill)
 
 template BillProposal
   with
     bill : Bill
+    customerApproved : Bool
+    workerApproved : Bool
+    bankApproved : Bool
   where
     signatory bill.customer
     observer bill.worker, bill.bank
+
+    key (bill.customer, bill.worker, bill.bank) : (Party, Party, Party)
+    maintainer key._1
 
     ensure bill.cash > 0.0
 
@@ -39,95 +41,92 @@ template BillProposal
             receiver = [bill.worker]
             payer = [bill.customer]
 
-    choice CustomerApprove : ContractId BillProposal
+    choice ApproveStep : ContractId BillProposal
       with
+        user : Party
         accountCid : ContractId Account
-      controller bill.customer
+      controller if (user == bill.customer) then bill.customer else bill.worker
       do
-        (aCid, a) <- fetchByKey @Account bill.customer
-        assertMsg
-          "customer does not has enough money pay the bill"
-          (a.balance >= bill.cash)
-        exercise aCid TransferProposal
+        (accountCid, account) <- fetchByKey @Account user
+        if (user == bill.customer) 
+          then assertMsg
+            "customer does not has enough money pay the bill"
+            (account.balance >= bill.cash)
+          else assertMsg "" (bill.cash > 0.0)
+        exercise accountCid TransferProposal
           with
-            receiver = [bill.bank]
-            payer = []
-        create this
+            receiver = if (user == bill.customer) 
+              then bill.bank :: account.receivers
+              else account.receivers
+            payer = if (user == bill.customer)
+              then account.payers
+              else bill.bank :: account.payers
+        if (user == bill.customer)
+          then do
+            create this with customerApproved = True
+          else do
+            create this with workerApproved = True
 
-    choice WorkerApprove : ContractId WorkerApproved
-      with
-        accountCid : ContractId Account
-      controller bill.worker
-      do
-        (waCid, _) <- fetchByKey @Account bill.worker
-        exercise waCid TransferProposal
-          with
-            receiver = []
-            payer = [bill.bank]
-        create WorkerApproved with bill
-
-template WorkerApproved
-  with
-    bill : Bill
-  where
-    signatory bill.customer, bill.worker
-    observer bill.bank
-
-    choice BankApprove : ContractId BankApproved
+    choice BankApprove : ContractId BillProposal
       controller bill.bank
       do
+        assertMsg "customer not approved" (customerApproved)
+        assertMsg "worker not approved" (workerApproved)
+        create this with bankApproved = True
+
+    choice CreateBill : ContractId FinalBill
+      controller bill.bank
+      do
+        assertMsg "customer not approved" (customerApproved)
+        assertMsg "worker not approved" (workerApproved)
+        assertMsg "bank not approved" (bankApproved)
         -- transfer customer's money to bank's account
-        (bankAccountCid, _) <- fetchByKey @Account bill.bank
-        exercise bankAccountCid TransferIncome with money = bill.cash
-        create BankApproved with bill
-
-template BankApproved
-  with
-    bill : Bill
-  where
-    signatory bill.customer, bill.worker, bill.bank
-
-    choice PayWorker : ContractId Bill
-      controller bill.bank
-      do
-        (bankAccountCid, _) <- fetchByKey @Account bill.bank
-        exercise bankAccountCid TransferPay with money = bill.cash
-        billCid <- create Bill
-          with
-            customer = bill.customer
-            worker = bill.worker
-            bank = bill.bank
-            cash = bill.cash
-            transfer = False
-        exercise billCid TransferMoney
+        bankAccountCid <- exerciseByKey @Account bill.bank
+          TransferIncome with money = bill.cash
+        exercise bankAccountCid TransferPay
+          with money = bill.cash
+        createAndExercise
+          FinalBill with bill
+          TransferMoney
 
 test_bill : Script ()
 test_bill = script do
   accounts <- allocateAccounts ["UN Bank", "Alice", "Bob"] 1000.0
-  let all@[
+  let
+    all@[
           (bank, bankAccountCid),
           (alice, aliceAccountCid),
           (bob, bobAccountCid)
         ] = map (identity) accounts
-  -- alice create a bill proposal
-  aliceCid <- submit alice do
-    createCmd BillProposal
-      with
-        bill = Bill
+    bill = Bill
           with
             customer = alice
             worker = bob
             bank
             cash = 750.0
             transfer = False
+  -- customer create a bill proposal
+  billProposalCid <- submit alice do
+    createCmd BillProposal with 
+      bill
+      customerApproved = False
+      workerApproved = False
+      bankApproved = False
   -- bank pre-approve the bill
-  baCid <- submit bank do exerciseCmd aliceCid BankPreApprove
-  -- alice approve the bill
-  aliceCid <- submit alice do exerciseCmd aliceCid CustomerApprove with accountCid = baCid
-  -- bob approve the bill
-  bobCid <- submit bob do exerciseCmd aliceCid WorkerApprove with accountCid = baCid
+  bankAccountCid <- submit bank do
+    exerciseCmd billProposalCid BankPreApprove
+  -- worker approve the bill
+  billProposalCid <- submit bob do 
+    exerciseCmd billProposalCid ApproveStep
+      with accountCid = bankAccountCid, user = bob
+  -- customer approve the bill
+  billProposalCid <- submit alice do 
+    exerciseCmd billProposalCid ApproveStep
+      with accountCid = bankAccountCid, user = alice
   -- bank approve the bill
-  bankCid <- submit bank do exerciseCmd bobCid BankApprove
-  -- The job is done and bank transfer the money to worker
-  billCid <- submit bank do exerciseCmd bankCid PayWorker
+  billProposalCid <- submit bank do 
+    exerciseCmd billProposalCid BankApprove
+  -- bank create a bill and transfer the money
+  submit bank do
+    exerciseCmd billProposalCid CreateBill
   pure()

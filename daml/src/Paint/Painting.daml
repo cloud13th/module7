@@ -2,8 +2,8 @@ module Paint.Painting where
 
 import Daml.Script
 import Paint.Bill
-
-data PaintingStatus = P_INIT | P_START | P_PROGRESS | P_FINISHED | P_PAYED deriving (Eq, Show, Ord)
+import Paint.Account
+import Paint.PaintData
 
 template PaintingProposal
   with
@@ -11,62 +11,87 @@ template PaintingProposal
   where
     signatory owner
 
-    choice InitPaintingTask
-      : (ContractId Painting, ContractId BillProposal)
+    choice InitPaintingTask : (ContractId Painting, ContractId BillProposal)
       with
-        bank : Party
+        intermediary : Party
         worker : Party
         salary : Decimal
       controller owner
       do
-        bpCid <- create BillProposal with
-            bill = Bill
-              with
-                customer = owner
-                worker = worker
-                bank
-                cash = salary
-                transfer = False
-        pCid <- create Painting with
-          housekeeper = owner
-          salary
-          worker
-          status = P_INIT
-        pure (pCid, bpCid)
+        billProposalCid <- create BillProposal 
+          with
+            bill = initBill owner worker intermediary salary
+            customerApproved = False
+            workerApproved = False
+            bankApproved = False
+        paintingCid <- create Painting
+          with
+            task = initPaint owner intermediary worker salary
+        pure (paintingCid, billProposalCid)
 
 template Painting
   with
-    housekeeper : Party
-    salary : Decimal
-    worker : Party
-    status : PaintingStatus
+    task : Paint
   where
-    signatory housekeeper, worker
+    signatory task.housekeeper
+    observer task.intermediary, task.worker
 
-    key (housekeeper, worker) : (Party, Party)
-    maintainer key._1
+    nonconsuming choice IntermediaryConfirm
+      : ContractId Account
+      with
+        billProposalCid : ContractId BillProposal
+      controller task.intermediary
+      do
+        exercise billProposalCid BankPreApprove
 
     choice Start : ContractId Painting
-      controller worker
+      with
+        intermediaryAccountCid : ContractId Account
+      controller task.worker
       do
-        create this with status = P_START
+        exerciseByKey
+          @BillProposal
+          (task.housekeeper, task.worker, task.intermediary)
+          ApproveStep
+            with
+              accountCid = intermediaryAccountCid
+              user = task.worker
+        create this with task.status = P_START
 
     choice Progress : ContractId Painting
-      controller worker
+      controller task.worker
       do 
-        create this with status = P_PROGRESS
-    
+        create this with task.status = P_PROGRESS
+
     choice Finished : ContractId Painting
-      controller worker
+      controller task.worker
       do 
-        create this with status = P_FINISHED
-    
-    choice PayMoney : ()
-      controller housekeeper
-      do 
+        create this with task.status = P_FINISHED
+
+    choice PayMoneyRequest : ContractId Painting
+      with
+        intermediaryAccountCid : ContractId Account
+      controller task.housekeeper
+      do
+        exerciseByKey
+          @BillProposal
+          (task.housekeeper, task.worker, task.intermediary)
+          ApproveStep
+            with
+              accountCid = intermediaryAccountCid
+              user = task.housekeeper
         -- update painting status
-        create this with status = P_PAYED
-        -- pay money
+        create this with task.status = P_PAYED
+
+    choice MoneyTransfer : ()
+      controller task.intermediary
+      do
+        -- intermediary approved
+        billProposalCid <- exerciseByKey
+          @BillProposal
+          (task.housekeeper, task.worker, task.intermediary)
+            BankApprove
+        exercise billProposalCid CreateBill
         pure()
 
 test_painting : Script ()
@@ -74,20 +99,28 @@ test_painting = script do
   bank <- allocateParty "UN Bank"
   alice <- allocateParty "Alice"
   bob <- allocateParty "Bob"
-  initCid <- submit alice do
-    createCmd Painting with
-      housekeeper = alice
-      salary = 650.0
-      worker = bob
-      status = P_INIT
-  (paintingProposalCid, billProposalCid) <- submit alice do
-    createAndExerciseCmd PaintingProposal InitPaintingTask
-      with
-        bank
-        worker = bob
-        salary = 450.0
-  -- startCid <- submit bob do exerciseCmd initCid Start
-  -- progressCid <- submit bob do exerciseCmd startCid Progress
-  -- finishedCid <- submit bob do exerciseCmd progressCid Finished
-  -- submit alice do exerciseCmd finishedCid PayMoney
+  -- allocate accounts for them
+  accounts <- mapA
+    (\party -> submit party do
+      createCmd Account with owner = party, balance = 10000.0, receivers = [], payers = [])
+    [bank, alice, bob]
+  (paintingCid, billProposalCid) <- submit alice do
+    createAndExerciseCmd
+      PaintingProposal with owner = alice
+      InitPaintingTask with intermediary = bank, worker = bob, salary = 450.0
+  bankAccountCid <- submit bank do
+    exerciseCmd paintingCid IntermediaryConfirm
+      with billProposalCid
+  startCid <- submit bob do
+    exerciseCmd paintingCid Start
+      with intermediaryAccountCid = bankAccountCid
+  progressCid <- submit bob do exerciseCmd startCid Progress
+  finishedCid <- submit bob do exerciseCmd progressCid Finished
+  -- housekeeper create a request to pay money
+  payMoneyRequestCid <- submit alice do
+    exerciseCmd finishedCid PayMoneyRequest 
+      with intermediaryAccountCid = bankAccountCid
+  -- the intermediary execute paying progress
+  submit bank do
+    exerciseCmd payMoneyRequestCid MoneyTransfer
   pure()
