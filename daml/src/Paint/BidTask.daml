@@ -1,0 +1,63 @@
+module Paint.BidTask where
+
+import Daml.Script
+import Paint.PaintData
+import Paint.Account
+import Paint.Painting
+import DA.List
+
+data TaskOwner = TaskOwner
+  with
+    housekeeper : Party
+    paintingCid : ContractId PaintingProposal
+      deriving (Eq, Show)
+
+template BidTask
+  with
+    bid : Bid
+    task : TaskOwner
+  where
+    signatory bid.bidder
+    observer task.housekeeper
+
+    key (bid, task.housekeeper) : (Bid, Party)
+    maintainer key._1.bidder
+
+    ensure bid.price >= 0.0
+
+    -- choice 
+
+
+bid_test : Script ()
+bid_test = script do
+  bank <- allocateParty "UN Bank"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  david <- allocateParty "David"
+  -- allocate accounts for them
+  accounts <- mapA
+    (\party -> submit party do
+      createCmd Account with owner = party, balance = 10000.0, receivers = [], payers = [])
+    [bank, alice, bob, david]
+
+
+  
+
+  billProposalCid <- submit alice do
+    createCmd PaintingProposal with owner = alice, workerOptional = None
+
+  let bids = [(initBid bob 344.0), (initBid david 333.3)]
+  let bid = minimumBy (\x y -> compare x.price y.price) bids
+  debug "11111111111111111111"
+  debug bid
+
+  -- 
+
+  billProposalCid <- submit alice do      
+    exerciseCmd billProposalCid ChooseWorker with worker = bid.bidder
+
+  (paintingCid, billProposalCid) <- submit alice do
+    exerciseCmd billProposalCid InitPaintingTask
+      with intermediary = bank, salary = 450.0
+
+  pure()

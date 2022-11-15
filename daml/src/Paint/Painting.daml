@@ -4,26 +4,37 @@ import Daml.Script
 import Paint.Bill
 import Paint.Account
 import Paint.PaintData
+import DA.Optional (fromSome, isSome)
 
 template PaintingProposal
   with
     owner : Party
+    workerOptional : Optional Party
   where
     signatory owner
+
+    choice ChooseWorker : ContractId PaintingProposal
+      with
+        worker : Party
+      controller owner
+      do
+        create this with workerOptional = (Some worker)
 
     choice InitPaintingTask : (ContractId Painting, ContractId BillProposal)
       with
         intermediary : Party
-        worker : Party
         salary : Decimal
       controller owner
       do
+        assertMsg "worker is not choosed" (isSome workerOptional)
+        let worker = fromSome workerOptional
         billProposalCid <- create BillProposal 
           with
             bill = initBill owner worker intermediary salary
             customerApproved = False
             workerApproved = False
             bankApproved = False
+            bankPreApproved = False
         paintingCid <- create Painting
           with
             task = initPaint owner intermediary worker salary
@@ -36,19 +47,22 @@ template Painting
     signatory task.housekeeper
     observer task.intermediary, task.worker
 
-    nonconsuming choice IntermediaryConfirm
-      : ContractId Account
+    choice IntermediaryConfirm : (ContractId Painting, ContractId Account)
       with
         billProposalCid : ContractId BillProposal
       controller task.intermediary
       do
-        exercise billProposalCid BankPreApprove
+        assertMsg "the task staus -> init" (task.status == P_INIT)
+        (_, bankAccountCid) <- exercise billProposalCid BankPreApprove
+        paintingCid <- create this with task.status = P_PRE_CONFIRM
+        pure (paintingCid, bankAccountCid)
 
     choice Start : ContractId Painting
       with
         intermediaryAccountCid : ContractId Account
       controller task.worker
       do
+        assertMsg "the task staus -> pre-confirm" (task.status == P_PRE_CONFIRM)
         exerciseByKey
           @BillProposal
           (task.housekeeper, task.worker, task.intermediary)
@@ -61,18 +75,21 @@ template Painting
     choice Progress : ContractId Painting
       controller task.worker
       do 
+        assertMsg "the task staus -> start" (task.status == P_START)
         create this with task.status = P_PROGRESS
 
     choice Finished : ContractId Painting
       controller task.worker
       do 
+        assertMsg "the task staus -> progress" (task.status == P_PROGRESS)
         create this with task.status = P_FINISHED
 
-    choice PayMoneyRequest : ContractId Painting
+    choice HousekeeperConfirm : ContractId Painting
       with
         intermediaryAccountCid : ContractId Account
       controller task.housekeeper
       do
+        assertMsg "the task staus -> finished" (task.status == P_FINISHED)
         exerciseByKey
           @BillProposal
           (task.housekeeper, task.worker, task.intermediary)
@@ -81,17 +98,20 @@ template Painting
               accountCid = intermediaryAccountCid
               user = task.housekeeper
         -- update painting status
-        create this with task.status = P_PAYED
+        create this with task.status = P_PAYING
 
     choice MoneyTransfer : ()
       controller task.intermediary
       do
+        assertMsg "the task staus -> paying" (task.status == P_PAYING)
         -- intermediary approved
         billProposalCid <- exerciseByKey
           @BillProposal
           (task.housekeeper, task.worker, task.intermediary)
             BankApprove
         exercise billProposalCid CreateBill
+        paintCid <- create this with task.status = P_CLOSED
+        archive paintCid
         pure()
 
 test_painting : Script ()
@@ -104,23 +124,29 @@ test_painting = script do
     (\party -> submit party do
       createCmd Account with owner = party, balance = 10000.0, receivers = [], payers = [])
     [bank, alice, bob]
-  (paintingCid, billProposalCid) <- submit alice do
+
+  billProposalCid <- submit alice do
     createAndExerciseCmd
-      PaintingProposal with owner = alice
-      InitPaintingTask with intermediary = bank, worker = bob, salary = 450.0
-  bankAccountCid <- submit bank do
+      PaintingProposal with owner = alice, workerOptional = None
+      ChooseWorker with worker = bob
+
+  (paintingCid, billProposalCid) <- submit alice do
+    exerciseCmd billProposalCid InitPaintingTask
+      with intermediary = bank, salary = 450.0
+
+  (paintingCid, bankAccountCid) <- submit bank do
     exerciseCmd paintingCid IntermediaryConfirm
       with billProposalCid
-  startCid <- submit bob do
+  
+  paintingCid <- submit bob do
     exerciseCmd paintingCid Start
       with intermediaryAccountCid = bankAccountCid
-  progressCid <- submit bob do exerciseCmd startCid Progress
-  finishedCid <- submit bob do exerciseCmd progressCid Finished
-  -- housekeeper create a request to pay money
+  paintingCid <- submit bob do exerciseCmd paintingCid Progress
+  paintingCid <- submit bob do exerciseCmd paintingCid Finished
+  
   payMoneyRequestCid <- submit alice do
-    exerciseCmd finishedCid PayMoneyRequest 
+    exerciseCmd paintingCid HousekeeperConfirm 
       with intermediaryAccountCid = bankAccountCid
-  -- the intermediary execute paying progress
   submit bank do
     exerciseCmd payMoneyRequestCid MoneyTransfer
   pure()

@@ -13,21 +13,14 @@ initBill : Party -> Party -> Party -> Decimal -> Bill
 initBill customer worker bank cash =
   Bill with customer, worker, bank, cash, transfer = True
 
-billTransfered : Bill -> Bill
-billTransfered bill =
-  Bill with
-    customer = bill.customer
-    worker = bill.worker
-    bank = bill.bank
-    cash = bill.cash
-    transfer = True
-
 data PaintStatus = 
   P_INIT
+  | P_PRE_CONFIRM
   | P_START
   | P_PROGRESS
   | P_FINISHED
-  | P_PAYED
+  | P_PAYING
+  | P_CLOSED
     deriving (Eq, Show, Ord)
 
 data Paint = Paint
@@ -48,10 +41,15 @@ initPaint housekeeper intermediary worker salary =
     salary
     status = P_INIT
 
+data Bid = Bid
+  with
+    bidder : Party
+    price : Decimal
+      deriving (Eq, Show, Ord)
 
-
-
-
+initBid : Party -> Decimal -> Bid
+initBid bidder price =
+  Bid with bidder, price
 
 
 

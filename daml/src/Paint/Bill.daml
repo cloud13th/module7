@@ -15,7 +15,7 @@ template FinalBill
     choice TransferMoney : ContractId FinalBill
       controller bill.bank, bill.customer
       do
-        create this with bill = (billTransfered bill)
+        create this with bill.transfer = True
 
 template BillProposal
   with
@@ -23,6 +23,7 @@ template BillProposal
     customerApproved : Bool
     workerApproved : Bool
     bankApproved : Bool
+    bankPreApproved : Bool
   where
     signatory bill.customer
     observer bill.worker, bill.bank
@@ -32,14 +33,17 @@ template BillProposal
 
     ensure bill.cash > 0.0
 
-    nonconsuming choice BankPreApprove : ContractId Account
+    choice BankPreApprove : (ContractId BillProposal, ContractId Account)
       controller bill.bank
       do
-        (accountCid, account) <- fetchByKey @Account bill.bank
-        exercise accountCid TransferProposal
+        billProposalCid <- create this with bankPreApproved = True
+        bankAccountCid <- exerciseByKey
+          @Account bill.bank
+          TransferProposal
           with
             receiver = [bill.worker]
             payer = [bill.customer]
+        pure (billProposalCid, bankAccountCid)
 
     choice ApproveStep : ContractId BillProposal
       with
@@ -47,6 +51,7 @@ template BillProposal
         accountCid : ContractId Account
       controller if (user == bill.customer) then bill.customer else bill.worker
       do
+        assertMsg "bank not pre-approved" (bankPreApproved)
         (accountCid, account) <- fetchByKey @Account user
         if (user == bill.customer) 
           then assertMsg
@@ -72,6 +77,7 @@ template BillProposal
       do
         assertMsg "customer not approved" (customerApproved)
         assertMsg "worker not approved" (workerApproved)
+        assertMsg "bank not pre-approved" (bankPreApproved)
         create this with bankApproved = True
 
     choice CreateBill : ContractId FinalBill
@@ -112,17 +118,18 @@ test_bill = script do
       customerApproved = False
       workerApproved = False
       bankApproved = False
+      bankPreApproved = False
   -- bank pre-approve the bill
-  bankAccountCid <- submit bank do
+  (billProposalCid, bankAccountCid) <- submit bank do
     exerciseCmd billProposalCid BankPreApprove
-  -- worker approve the bill
-  billProposalCid <- submit bob do 
-    exerciseCmd billProposalCid ApproveStep
-      with accountCid = bankAccountCid, user = bob
   -- customer approve the bill
   billProposalCid <- submit alice do 
     exerciseCmd billProposalCid ApproveStep
       with accountCid = bankAccountCid, user = alice
+  -- worker approve the bill
+  billProposalCid <- submit bob do 
+    exerciseCmd billProposalCid ApproveStep
+      with accountCid = bankAccountCid, user = bob
   -- bank approve the bill
   billProposalCid <- submit bank do 
     exerciseCmd billProposalCid BankApprove
