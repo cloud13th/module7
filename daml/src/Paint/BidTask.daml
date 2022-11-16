@@ -5,11 +5,12 @@ import Paint.PaintData
 import Paint.Account
 import Paint.Painting
 import DA.List
+import DA.Optional (isSome)
 
 data TaskOwner = TaskOwner
   with
     housekeeper : Party
-    paintingCid : ContractId PaintingProposal
+    -- paintingCid : ContractId PaintingProposal
       deriving (Eq, Show)
 
 template BidTask
@@ -25,8 +26,43 @@ template BidTask
 
     ensure bid.price >= 0.0
 
-    -- choice 
+    nonconsuming choice ReleaseBidPrice: ContractId BidBoard
+      controller task.housekeeper
+      do
+        -- add bidder into Bidboard's bidders
+        optionalBidBoardCid <- lookupByKey @BidBoard task.housekeeper
+        if (isSome optionalBidBoardCid)
+          then do
+            (bbCid, bboard) <- fetchByKey @BidBoard task.housekeeper
+            assertMsg "the new price must greater than before"
+              (bid.price > bboard.currentBid.price)
+            exerciseByKey @BidBoard task.housekeeper AddBidder with bid
+          else
+            create BidBoard with
+              currentBid = bid
+              task
+              bidders = [bid.bidder]
 
+template BidBoard
+  with
+    currentBid : Bid
+    task : TaskOwner
+    bidders : [Party]
+  where
+    signatory task.housekeeper
+    observer bidders
+
+    key task.housekeeper : Party
+    maintainer key
+
+    choice AddBidder : ContractId BidBoard
+      with
+        bid : Bid
+      controller task.housekeeper
+      do
+        create this with
+          currentBid = bid
+          bidders = dedup (bid.bidder :: bidders)
 
 bid_test : Script ()
 bid_test = script do
@@ -40,12 +76,26 @@ bid_test = script do
       createCmd Account with owner = party, balance = 10000.0, receivers = [], payers = [])
     [bank, alice, bob, david]
 
-
-  
-
   billProposalCid <- submit alice do
     createCmd PaintingProposal with owner = alice, workerOptional = None
+  let task = TaskOwner
+        with
+          housekeeper = alice
+          -- paintingCid = billProposalCid
+  -- create bids
+  bobBidCid <- submit bob do
+    createCmd BidTask with bid = (initBid bob 300.0), task
+  davidBidCid <- submit david do
+    createCmd BidTask with bid = (initBid david 400.0), task
+  -- alice add bob's bid into board
+  submit alice do
+    exerciseCmd bobBidCid ReleaseBidPrice
+  submit alice do
+    exerciseCmd davidBidCid ReleaseBidPrice
+  -- submit alice do
+  --   exerciseCmd bobBidCid ReleaseBidPrice
 
+  -- select a bid from bids
   let bids = [(initBid bob 344.0), (initBid david 333.3)]
   let bid = minimumBy (\x y -> compare x.price y.price) bids
   debug "11111111111111111111"
