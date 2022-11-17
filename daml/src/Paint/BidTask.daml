@@ -6,6 +6,7 @@ import Paint.Account
 import Paint.Painting
 import DA.List
 import DA.Optional (isSome)
+import DA.Foldable (mapA_)
 
 data TaskOwner = TaskOwner
   with
@@ -17,12 +18,13 @@ template BidTask
   with
     bid : Bid
     task : TaskOwner
+    enable : Bool
   where
     signatory bid.bidder
     observer task.housekeeper
 
-    key (bid, task.housekeeper) : (Bid, Party)
-    maintainer key._1.bidder
+    key (bid.bidder, task.housekeeper) : (Party, Party)
+    maintainer key._1
 
     ensure bid.price >= 0.0
 
@@ -34,14 +36,41 @@ template BidTask
         if (isSome optionalBidBoardCid)
           then do
             (bbCid, bboard) <- fetchByKey @BidBoard task.housekeeper
-            assertMsg "the new price must greater than before"
-              (bid.price > bboard.currentBid.price)
+            assertMsg "the new price must less than before"
+              (bid.price < bboard.currentBid.price)
             exerciseByKey @BidBoard task.housekeeper AddBidder with bid
           else
             create BidBoard with
               currentBid = bid
               task
               bidders = [bid.bidder]
+
+    choice RepeatBid : ContractId BidTask
+      with
+        newPrice : Decimal
+      controller bid.bidder
+      do
+        -- check contract's status
+        assertMsg "the contract disabled" enable
+        -- get newest price of the task
+        (boardCid, board) <- fetchByKey @BidBoard task.housekeeper
+        -- validate the current price
+        assertMsg "the new price must less than current price"
+          (newPrice < board.currentBid.price)
+        -- create a new contract
+        create this with bid.price = newPrice
+
+    choice CloseBid : ()
+      controller task.housekeeper
+      do
+        bidCid <- create this with enable = False
+        archive bidCid
+        pure()
+    
+    choice DisableBid : ContractId BidTask
+      controller task.housekeeper
+      do
+        create this with enable = False
 
 template BidBoard
   with
@@ -64,6 +93,21 @@ template BidBoard
           currentBid = bid
           bidders = dedup (bid.bidder :: bidders)
 
+    nonconsuming choice ChooseBid : ()
+      controller task.housekeeper
+      do
+        -- find all bids by key (bidder housekeeper)
+        tasks <- mapA (\bidder -> fetchByKey @BidTask (bidder, task.housekeeper)) bidders
+        -- fetch all values from tasks
+        bids <- mapA (\bid -> do return (snd bid)) tasks
+        -- find the minimum bid.price from bids
+        let finalBid = minimumBy (\x y -> compare x.bid.price y.bid.price) bids
+        -- archive others
+        mapA_ (\bidTask -> exerciseByKey @BidTask (bidTask.bid.bidder, task.housekeeper) CloseBid) (delete finalBid bids)
+        -- disable the final bid
+        exerciseByKey @BidTask (finalBid.bid.bidder, task.housekeeper) DisableBid
+        return()
+
 bid_test : Script ()
 bid_test = script do
   bank <- allocateParty "UN Bank"
@@ -84,22 +128,33 @@ bid_test = script do
           -- paintingCid = billProposalCid
   -- create bids
   bobBidCid <- submit bob do
-    createCmd BidTask with bid = (initBid bob 300.0), task
+    createCmd BidTask with bid = (initBid bob 500.0), task, enable = True
   davidBidCid <- submit david do
-    createCmd BidTask with bid = (initBid david 400.0), task
+    createCmd BidTask with bid = (initBid david 400.0), task, enable = True
   -- alice add bob's bid into board
-  submit alice do
+  boardCid <- submit alice do
     exerciseCmd bobBidCid ReleaseBidPrice
-  submit alice do
+  boardCid <- submit alice do
     exerciseCmd davidBidCid ReleaseBidPrice
-  -- submit alice do
-  --   exerciseCmd bobBidCid ReleaseBidPrice
+  submitMustFail alice do
+    exerciseCmd bobBidCid ReleaseBidPrice
+  --
+  bobBidCid <- submit bob do
+    exerciseCmd bobBidCid RepeatBid with newPrice = 399.0
+  boardCid <- submit alice do
+    exerciseCmd bobBidCid ReleaseBidPrice
+
+  submitMustFail david do
+    exerciseCmd davidBidCid RepeatBid with newPrice = 400.1
+
+  -- choose a bid
+  submit alice do exerciseCmd boardCid ChooseBid
 
   -- select a bid from bids
   let bids = [(initBid bob 344.0), (initBid david 333.3)]
   let bid = minimumBy (\x y -> compare x.price y.price) bids
   debug "11111111111111111111"
-  debug bid
+
 
   -- 
 
